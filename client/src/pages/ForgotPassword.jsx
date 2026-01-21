@@ -22,19 +22,41 @@ export default function ForgotPassword() {
   const showMessage = (msg, type) => {
     setMessage(msg)
     setMessageType(type)
+    setTimeout(() => {
+      setMessage("")
+    }, 5000)
   }
 
-  const createRecaptcha = () => {
-    if (window.recaptchaVerifier) {
-      window.recaptchaVerifier.clear()
-      window.recaptchaVerifier = null
+  // Recaptcha setup with cleanup (unique instance for ForgotPassword)
+  useEffect(() => {
+    const name = "recaptchaVerifierForgot"
+    try {
+      if (!window[name]) {
+        window[name] = new RecaptchaVerifier(
+          auth,
+          "recaptcha-forgot",
+          { size: "invisible" }
+        )
+      }
+    } catch (e) {
+      console.log("Recaptcha init error", e)
     }
-    window.recaptchaVerifier = new RecaptchaVerifier(auth, "recaptcha-container", {
-      size: "invisible",
-    })
-    return window.recaptchaVerifier
-  }
 
+    // Cleanup on unmount
+    return () => {
+      try {
+        if (window[name]) {
+          window[name].clear && window[name].clear()
+          window[name] = null
+        }
+      } catch (e) {
+        console.log("Recaptcha cleanup error", e)
+        window[name] = null
+      }
+    }
+  }, [])
+
+  // Timer
   useEffect(() => {
     let interval
     if (timer > 0) {
@@ -70,8 +92,19 @@ export default function ForgotPassword() {
         return
       }
 
+      console.log("📞 Forgot Password - Phone from backend:", data.phone)
+      console.log("📞 Forgot Password - Phone type:", typeof data.phone)
+
       setResolvedPhone(data.phone)
-      const appVerifier = createRecaptcha()
+
+      // Validate phone from backend before calling Firebase
+      if (!data.phone || typeof data.phone !== "string" || !data.phone.startsWith("+")) {
+        showMessage("Invalid phone returned from server", "error")
+        setLoading(false)
+        return
+      }
+
+      const appVerifier = window.recaptchaVerifierForgot || window.recaptchaVerifier
       const confirmationResult = await signInWithPhoneNumber(
         auth,
         data.phone,
@@ -83,8 +116,22 @@ export default function ForgotPassword() {
       setTimer(60)
       showMessage(`OTP sent to ${data.phone}`, "success")
     } catch (err) {
-      console.error("OTP ERROR:", err)
+      console.error("OTP Error:", err)
       showMessage("OTP sending failed", "error")
+      
+      // Reset recaptcha on error (recreate named verifier)
+      try {
+        if (window.recaptchaVerifierForgot) {
+          window.recaptchaVerifierForgot.clear && window.recaptchaVerifierForgot.clear()
+          window.recaptchaVerifierForgot = new RecaptchaVerifier(
+            auth,
+            "recaptcha-forgot",
+            { size: "invisible" }
+          )
+        }
+      } catch (e) {
+        console.log("Recaptcha reset error", e)
+      }
     } finally {
       setLoading(false)
     }
@@ -92,17 +139,22 @@ export default function ForgotPassword() {
 
   // VERIFY OTP
   const verifyOtp = async () => {
-    if (!otp) {
-      showMessage("Enter OTP", "error")
+    if (!otp || otp.length !== 6) {
+      showMessage("Enter 6-digit OTP", "error")
       return
     }
+
+    setLoading(true)
 
     try {
       await confirmation.confirm(otp)
       showMessage("OTP verified! Enter new password.", "success")
       setStep(3)
     } catch (err) {
+      console.error("OTP Verification Error:", err)
       showMessage("Invalid OTP", "error")
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -112,6 +164,11 @@ export default function ForgotPassword() {
 
     if (password !== confirmPassword) {
       showMessage("Passwords do not match", "error")
+      return
+    }
+
+    if (password.length < 6) {
+      showMessage("Password must be at least 6 characters", "error")
       return
     }
 
@@ -135,6 +192,7 @@ export default function ForgotPassword() {
       showMessage("Password reset successful! Redirecting to login...", "success")
       setTimeout(() => navigate("/login"), 2000)
     } catch (err) {
+      console.error("Password Reset Error:", err)
       showMessage("Password reset failed", "error")
     } finally {
       setLoading(false)
@@ -161,7 +219,7 @@ export default function ForgotPassword() {
         </div>
 
         <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
-          <div id="recaptcha-container"></div>
+          <div id="recaptcha-forgot"></div>
 
           {/* STEP 1 - IDENTIFIER */}
           {step === 1 && (
@@ -276,9 +334,17 @@ export default function ForgotPassword() {
               <button
                 type="button"
                 onClick={verifyOtp}
-                className="w-full bg-green-500 text-white py-3 rounded-lg font-semibold hover:bg-green-600 transition-all shadow-md"
+                disabled={loading}
+                className="w-full bg-green-500 text-white py-3 rounded-lg font-semibold hover:bg-green-600 transition-all shadow-md disabled:opacity-50"
               >
-                Verify OTP
+                {loading ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Verifying...
+                  </span>
+                ) : (
+                  "Verify OTP"
+                )}
               </button>
 
               <button
@@ -298,7 +364,7 @@ export default function ForgotPassword() {
 
           {/* STEP 3 - NEW PASSWORD */}
           {step === 3 && (
-            <div className="space-y-5">
+            <form onSubmit={resetPassword} className="space-y-5">
               <p className="text-sm text-gray-600 text-center">
                 Resetting password for <b>{identifier}</b>
               </p>
@@ -309,10 +375,11 @@ export default function ForgotPassword() {
                 </label>
                 <input
                   type="password"
-                  placeholder="Enter new password"
+                  placeholder="Enter new password (min 6 characters)"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                  required
                 />
               </div>
 
@@ -326,6 +393,7 @@ export default function ForgotPassword() {
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                  required
                 />
               </div>
 
@@ -353,7 +421,7 @@ export default function ForgotPassword() {
               )}
 
               <button
-                onClick={resetPassword}
+                type="submit"
                 disabled={loading}
                 className="w-full bg-gradient-to-r from-blue-500 to-green-500 text-white py-3 rounded-lg font-semibold hover:from-blue-600 hover:to-green-600 transition-all disabled:opacity-50 shadow-md"
               >
@@ -366,7 +434,7 @@ export default function ForgotPassword() {
                   "Reset Password"
                 )}
               </button>
-            </div>
+            </form>
           )}
         </div>
       </div>

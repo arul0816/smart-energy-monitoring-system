@@ -6,7 +6,8 @@ const db = require("./config/db")
 const authRoutes = require("./routes/auth.routes")
 const userRoutes = require("./routes/user")
 
-
+// Import Energy Simulator
+const energySimulator = require("./services/energySimulator")
 
 const app = express()
 
@@ -42,4 +43,9 @@ app.use("/api/user", userRoutes)
 const PORT = process.env.PORT || 5000
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
+  
+  // Start Energy Simulation (runs every 1 minute for demo)
+  // Change to 60 minutes for real deployment
+  energySimulator.startAutoSimulation(1) // 1 minute interval for testing
+  console.log("⚡ Energy simulation started")
 })

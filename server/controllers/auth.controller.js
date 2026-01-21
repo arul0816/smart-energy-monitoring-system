@@ -2,8 +2,6 @@ const db = require("../config/db")
 const bcrypt = require("bcrypt")
 const jwt = require("jsonwebtoken")
 const { OAuth2Client } = require("google-auth-library")
-const crypto = require("crypto")
-const nodemailer = require("nodemailer")
 const normalizePhone = require("../utils/normalizePhone")
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID)
@@ -20,70 +18,71 @@ exports.registerUser = async (req, res) => {
 
   const hashedPassword = await bcrypt.hash(password, 10)
 
-  // 🔹 normalize phone (if identifier is phone)
+  // Normalize identifier
+  const upperIdentifier = identifier.toUpperCase()
   const normalizedPhone = normalizePhone(identifier)
+  const rawPhone = identifier.replace(/\D/g, "").slice(-10)
 
-  // if identifier is NOT meter id and NOT valid phone
-  if (!identifier.startsWith("EB") && !normalizedPhone) {
-    return res.status(400).json({
-      message: "Invalid phone number or meter ID format",
-    })
-  }
-
-  // 1️⃣ Find EB consumer
+  // Find EB consumer (match meter_id, normalized phone, or last 10 digits)
   const findEbSql = `
     SELECT id, phone FROM eb_consumers
-    WHERE meter_id = ? OR phone = ?
+    WHERE meter_id = ?
+      OR phone = ?
+      OR RIGHT(REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ',''), 10) = ?
   `
 
   db.query(
     findEbSql,
-    [identifier, normalizedPhone],
+    [upperIdentifier, normalizedPhone, rawPhone],
     (err, ebRows) => {
-      if (err) return res.status(500).json({ message: "DB error" })
+      if (err) {
+        console.error("DB Error:", err)
+        return res.status(500).json({ message: "Database error" })
+      }
 
       if (ebRows.length === 0) {
-        return res
-          .status(403)
-          .json({ message: "You are not an EB consumer" })
+        return res.status(403).json({ message: "You are not an EB consumer" })
       }
 
       const ebConsumerId = ebRows[0].id
       const ebPhone = ebRows[0].phone
 
-      // 2️⃣ Check already registered
+      // Check if already registered
       db.query(
         "SELECT id FROM users WHERE eb_consumer_id = ?",
         [ebConsumerId],
         (err, userRows) => {
-          if (userRows.length > 0) {
-            return res
-              .status(409)
-              .json({ message: "User already registered" })
+          if (err) {
+            console.error("DB Error:", err)
+            return res.status(500).json({ message: "Database error" })
           }
 
-          // 3️⃣ Insert user
-const insertSql = `
-  INSERT INTO users (
-    name,
-    email,
-    password,
-    phone,
-    eb_consumer_id,
-    is_active,
-    created_at
-  )
-  VALUES (?, ?, ?, ?, ?, 1, NOW())
-`
+          if (userRows.length > 0) {
+            return res.status(409).json({ message: "User already registered" })
+          }
+
+          // Insert user
+          const insertSql = `
+            INSERT INTO users (
+              name,
+              email,
+              password,
+              phone,
+              eb_consumer_id,
+              is_active,
+              created_at
+            )
+            VALUES (?, ?, ?, ?, ?, 1, NOW())
+          `
 
           db.query(
             insertSql,
-            [name, email, hashedPassword, ebPhone,  ebConsumerId],
+            [name, email, hashedPassword, ebPhone, ebConsumerId],
             (err, result) => {
-              if (err)
-                return res
-                  .status(500)
-                  .json({ message: "Registration failed" })
+              if (err) {
+                console.error("Insert Error:", err)
+                return res.status(500).json({ message: "Registration failed" })
+              }
 
               const token = jwt.sign(
                 { id: result.insertId },
@@ -113,42 +112,50 @@ exports.loginUser = (req, res) => {
     return res.status(400).json({ message: "All fields are required" })
   }
 
-  // 🔹 normalize phone
+  // Normalize identifier
+  const upperIdentifier = identifier.toUpperCase()
   const normalizedPhone = normalizePhone(identifier)
+  const lowerEmail = identifier.toLowerCase()
+
+  // 🔥 For phone login, also try raw 10-digit format
+  const rawPhone = identifier.replace(/\D/g, '').slice(-10)
 
   const sql = `
-    SELECT u.*, e.phone, e.meter_id
+    SELECT u.*, e.meter_id, e.phone
     FROM users u
     JOIN eb_consumers e ON u.eb_consumer_id = e.id
-    WHERE u.email = ?
+    WHERE LOWER(u.email) = ?
        OR e.phone = ?
+       OR RIGHT(REPLACE(REPLACE(REPLACE(e.phone,'+',''),'-',''),' ',''), 10) = ?
        OR e.meter_id = ?
-    LIMIT 1
   `
 
   db.query(
     sql,
-    [identifier, normalizedPhone, identifier],
+    [lowerEmail, normalizedPhone, rawPhone, upperIdentifier],
     async (err, results) => {
-      if (err) return res.status(500).json({ message: "Database error" })
+      if (err) {
+        console.error("Login DB Error:", err)
+        return res.status(500).json({ message: "Database error" })
+      }
 
       if (results.length === 0) {
         return res.status(401).json({
-          message: "Invalid credentials or EB consumer not found",
+          message: "Invalid credentials",
         })
       }
 
       const user = results[0]
 
       if (user.is_active !== 1) {
-        return res
-          .status(403)
-          .json({ message: "Account not active. Please register." })
+        return res.status(403).json({ 
+          message: "Account not active. Please contact support." 
+        })
       }
 
       const isMatch = await bcrypt.compare(password, user.password)
       if (!isMatch) {
-        return res.status(401).json({ message: "Invalid password" })
+        return res.status(401).json({ message: "Invalid credentials" })
       }
 
       const token = jwt.sign(
@@ -161,7 +168,6 @@ exports.loginUser = (req, res) => {
     }
   )
 }
-
 
 /* ======================================================
    GOOGLE LOGIN (ONLY IF USER ALREADY REGISTERED)
@@ -179,16 +185,19 @@ exports.googleLogin = async (req, res) => {
 
     const sql = `
       SELECT id FROM users
-      WHERE email = ? AND is_active = 1
+      WHERE LOWER(email) = ? AND is_active = 1
     `
 
-    db.query(sql, [email], (err, results) => {
-      if (err) return res.status(500).json({ message: "Database error" })
+    db.query(sql, [email.toLowerCase()], (err, results) => {
+      if (err) {
+        console.error("Google Login DB Error:", err)
+        return res.status(500).json({ message: "Database error" })
+      }
 
       if (results.length === 0) {
-        return res
-          .status(403)
-          .json({ message: "Google account not registered" })
+        return res.status(403).json({ 
+          message: "Please register first with your EB consumer details" 
+        })
       }
 
       const jwtToken = jwt.sign(
@@ -200,69 +209,144 @@ exports.googleLogin = async (req, res) => {
       res.json({ message: "Google login successful", token: jwtToken })
     })
   } catch (err) {
+    console.error("Google Auth Error:", err)
     res.status(401).json({ message: "Google authentication failed" })
   }
 }
 
 /* ======================================================
-   FORGOT PASSWORD – EMAIL OTP (UNCHANGED LOGIC)
+   GET PHONE FOR OTP (Used in Register & Forgot Password)
 ====================================================== */
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
+exports.getPhoneForOtp = (req, res) => {
+  console.log("getPhoneForOtp request body:", req.body)
+  const { identifier } = req.body
+
+  if (!identifier) {
+    return res.status(400).json({ message: "Identifier required" })
   }
-})
 
-// exports.forgotPassword = async (req, res) => {
-//   const { email } = req.body
-//   if (!email) return res.status(400).json({ message: "Email required" })
+  const upperIdentifier = identifier.toUpperCase()
+  const normalizedPhone = normalizePhone(identifier)
+  const rawPhone = identifier.replace(/\D/g, "").slice(-10)
+  const lowerEmail = identifier.toLowerCase()
 
-//   const findSql =
-//     "SELECT otp_last_sent FROM users WHERE u.email = ? OR e.phone = ? OR e.meter_id = ?"
+  const sql = `
+    SELECT e.phone
+    FROM eb_consumers e
+    LEFT JOIN users u ON u.eb_consumer_id = e.id
+    WHERE LOWER(u.email) = ?
+       OR e.phone = ?
+       OR RIGHT(REPLACE(REPLACE(REPLACE(e.phone,'+',''),'-',''),' ',''), 10) = ?
+       OR e.meter_id = ?
+    LIMIT 1
+  `
 
-//   db.query(findSql, [email], async (err, results) => {
-//     if (err || results.length === 0) {
-//       return res.status(400).json({ message: "Email not found" })
-//     }
+  db.query(
+    sql, 
+    [lowerEmail, normalizedPhone, rawPhone, upperIdentifier], 
+    (err, rows) => {
+      if (err) {
+        console.error("Get Phone Error:", err)
+        return res.status(500).json({ message: "Database error" })
+      }
 
-//     const user = results[0]
+      console.log("getPhoneForOtp rows:", rows)
 
-//     if (user.otp_last_sent) {
-//       const diff =
-//         (Date.now() - new Date(user.otp_last_sent).getTime()) / 1000
-//       if (diff < 60) {
-//         return res.status(429).json({
-//           message: `Please wait ${Math.ceil(60 - diff)} seconds`
-//         })
-//       }
-//     }
+      if (rows.length === 0) {
+        return res.status(404).json({
+          message: "User not found. Please check your identifier."
+        })
+      }
 
-//     const otp = Math.floor(100000 + Math.random() * 900000).toString()
-//     const hashedOtp = await bcrypt.hash(otp, 10)
-//     const expiry = new Date(Date.now() + 10 * 60 * 1000)
+      if (!rows[0].phone) {
+        return res.status(500).json({
+          message: "Phone number not found in records"
+        })
+      }
 
-//     const updateSql = `
-//       UPDATE users
-//       SET reset_otp = ?, reset_otp_expiry = ?, otp_last_sent = NOW()
-//       WHERE u.email = ? OR e.phone = ? OR e.meter_id = ?
-//     `
+      // 🔥 NORMALIZE PHONE BEFORE SENDING TO FRONTEND
+      const phoneFromDB = rows[0].phone
+      const formattedPhone = normalizePhone(phoneFromDB)
 
-//     db.query(updateSql, [hashedOtp, expiry, email], async () => {
-//       await transporter.sendMail({
-//         to: email,
-//         subject: "Password Reset OTP",
-//         text: `Your OTP is ${otp}`
-//       })
+      if (!formattedPhone) {
+        return res.status(500).json({
+          message: "Invalid phone format in database"
+        })
+      }
 
-//       res.json({ message: "OTP sent to email" })
-//     })
-//   })
-// }
+      res.json({ phone: formattedPhone })
+    }
+  )
+}
 
 /* ======================================================
-   VERIFY OTP & RESET PASSWORD
+   FORGOT PASSWORD - SEND OTP
+====================================================== */
+exports.forgotPassword = (req, res) => {
+  console.log("forgotPassword request body:", req.body)
+  const { identifier } = req.body
+
+  if (!identifier) {
+    return res.status(400).json({ message: "Identifier required" })
+  }
+
+  const upperIdentifier = identifier.toUpperCase()
+  const normalizedPhone = normalizePhone(identifier)
+  const rawPhone = identifier.replace(/\D/g, "").slice(-10)
+  const lowerEmail = identifier.toLowerCase()
+
+  const findSql = `
+    SELECT u.id, e.phone
+    FROM users u
+    JOIN eb_consumers e ON u.eb_consumer_id = e.id
+    WHERE LOWER(u.email) = ?
+       OR e.phone = ?
+       OR RIGHT(REPLACE(REPLACE(REPLACE(e.phone,'+',''),'-',''),' ',''), 10) = ?
+       OR e.meter_id = ?
+    LIMIT 1
+  `
+
+  db.query(
+    findSql,
+    [lowerEmail, normalizedPhone, rawPhone, upperIdentifier],
+    (err, results) => {
+      if (err) {
+        console.error("Forgot Password Error:", err)
+        return res.status(500).json({ message: "Database error" })
+      }
+
+      console.log("forgotPassword results:", results)
+
+      if (results.length === 0) {
+        return res.status(404).json({ message: "User not found" })
+      }
+
+      const phone = results[0].phone
+
+      if (!phone) {
+        return res.status(500).json({ message: "Phone number not found" })
+      }
+
+      // 🔥 NORMALIZE PHONE BEFORE SENDING TO FRONTEND
+      const formattedPhone = normalizePhone(phone)
+
+      if (!formattedPhone) {
+        return res.status(500).json({
+          message: "Invalid phone format in database"
+        })
+      }
+
+      // Return phone for Firebase OTP
+      res.json({ 
+        message: "User found",
+        phone: formattedPhone 
+      })
+    }
+  )
+}
+
+/* ======================================================
+   RESET PASSWORD (After OTP Verification)
 ====================================================== */
 exports.resetPassword = async (req, res) => {
   const { identifier, password } = req.body
@@ -271,79 +355,50 @@ exports.resetPassword = async (req, res) => {
     return res.status(400).json({ message: "All fields required" })
   }
 
-  try {
-    const hashedPassword = await bcrypt.hash(password, 10)
+  const upperIdentifier = identifier.toUpperCase()
+  const normalizedPhone = normalizePhone(identifier)
+  const rawPhone = identifier.replace(/\D/g, "").slice(-10)
+  const lowerEmail = identifier.toLowerCase()
 
-    const sql = `
-      UPDATE users u
-      JOIN eb_consumers e ON u.eb_consumer_id = e.id
-      SET u.password = ?
-      WHERE u.email = ?
-         OR e.phone = ?
-         OR e.meter_id = ?
-    `
-
-    db.query(
-      sql,
-      [hashedPassword, identifier, identifier, identifier],
-      (err, result) => {
-        if (err) {
-          console.error(err)
-          return res.status(500).json({ message: "DB error" })
-        }
-
-        if (result.affectedRows === 0) {
-          return res
-            .status(404)
-            .json({ message: "User not found" })
-        }
-
-        res.json({ message: "Password reset successful" })
-      }
-    )
-  } catch (err) {
-    res.status(500).json({ message: "Server error" })
-  }
-}
-
-
-
-/* ======================================================
-   Get Phone For OTP
-====================================================== */
-exports.getPhoneForOtp = (req, res) => {
-  const { identifier } = req.body
-  const normalizedPhone = normalizePhone(identifier) 
-
-  const sql = `
-    SELECT e.phone
-    FROM eb_consumers e
-    LEFT JOIN users u ON u.eb_consumer_id = e.id
-    WHERE u.email = ?
+  const findSql = `
+    SELECT u.id
+    FROM users u
+    JOIN eb_consumers e ON u.eb_consumer_id = e.id
+    WHERE LOWER(u.email) = ?
        OR e.phone = ?
-       OR e.phone = ?  
+       OR RIGHT(REPLACE(REPLACE(REPLACE(e.phone,'+',''),'-',''),' ',''), 10) = ?
        OR e.meter_id = ?
     LIMIT 1
   `
 
-  db.query(sql, [identifier, identifier, normalizedPhone, identifier], (err, rows) => {
-    if (err) {
-      console.error("GET PHONE ERROR:", err)
-      return res.status(500).json({ message: "DB error" })
-    }
+  db.query(
+    findSql,
+    [lowerEmail, normalizedPhone, rawPhone, upperIdentifier],
+    async (err, results) => {
+      if (err) {
+        console.error("Reset Password Error:", err)
+        return res.status(500).json({ message: "Database error" })
+      }
 
-    if (rows.length === 0) {
-      return res.status(403).json({
-        message: "User not registered"
-      })
-    }
+      if (results.length === 0) {
+        return res.status(404).json({ message: "User not found" })
+      }
 
-    if (!rows[0].phone) {
-      return res.status(500).json({
-        message: "Phone not mapped"
-      })
-    }
+      const userId = results[0].id
+      const hashedPassword = await bcrypt.hash(password, 10)
 
-    res.json({ phone: rows[0].phone })
-  })
+      db.query(
+        "UPDATE users SET password = ? WHERE id = ?",
+        [hashedPassword, userId],
+        (err) => {
+          if (err) {
+            console.error("Password Update Error:", err)
+            return res.status(500).json({ message: "Password reset failed" })
+          }
+
+          res.json({ message: "Password reset successful" })
+        }
+      )
+    }
+  )
 }

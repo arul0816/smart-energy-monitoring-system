@@ -135,35 +135,38 @@ const resetPassword = async (e) => {
           value={otp}
           onChange={(e) => setOtp(e.target.value)}
           className="w-full border p-2 rounded mb-3"
-          required
+         
         />
 
         <input
           type="password"
+          name="new-password"
           placeholder="New password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
+          autoComplete="new-password"
           className="w-full border p-2 rounded mb-3"
           required
         />
 
         <input
           type="password"
+          name="new-password-confirm"
           placeholder="Confirm password"
           value={confirmPassword}
           onChange={(e) => setConfirmPassword(e.target.value)}
+          autoComplete="new-password"
           className="w-full border p-2 rounded mb-3"
           required
         />
 
         <button
-  type="button"
-  onClick={resetPassword}
-  disabled={loading}
-  className="bg-indigo-600 text-white p-3 rounded"
->
-  {loading ? "Resetting..." : "Reset Password"}
-</button>
+          type="submit"
+          disabled={loading}
+          className="bg-indigo-600 text-white p-3 rounded w-full"
+        >
+          {loading ? "Resetting..." : "Reset Password"}
+        </button>
 
 
         {message && (
