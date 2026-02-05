@@ -1,34 +1,19 @@
 const express = require("express")
 const router = express.Router()
 const authMiddleware = require("../middleware/authMiddleware")
-const db = require("../config/db")
+const userController = require("../controllers/user.controller")
 
-// Get user profile
-router.get("/profile", authMiddleware, (req, res) => {
-  const sql = `
-    SELECT 
-      u.id,
-      u.name,
-      u.email,
-      u.phone,
-      e.meter_id
-    FROM users u
-    JOIN eb_consumers e ON u.eb_consumer_id = e.id
-    WHERE u.id = ?
-  `
+/* ======================================================
+   PROFILE ROUTES (Auth required)
+====================================================== */
+router.get("/profile", authMiddleware, userController.getProfile)
+router.put("/profile/general", authMiddleware, userController.updateGeneralInfo)
+router.put("/profile/phone", authMiddleware, userController.updatePhone)
+router.post("/profile/email/send-verification", authMiddleware, userController.sendEmailVerification)
 
-  db.query(sql, [req.userId], (err, results) => {
-    if (err) {
-      console.error("Profile fetch error:", err)
-      return res.status(500).json({ message: "Database error" })
-    }
-    
-    if (results.length === 0) {
-      return res.status(404).json({ message: "User not found" })
-    }
-
-    res.json(results[0])
-  })
-})
+/* ======================================================
+   EMAIL VERIFICATION (No auth required - public link)
+====================================================== */
+router.get("/verify-email", userController.verifyEmailToken)
 
 module.exports = router

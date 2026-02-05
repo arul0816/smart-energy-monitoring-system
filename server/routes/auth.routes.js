@@ -8,9 +8,6 @@ router.post("/register", authController.registerUser)
 // Login (email / phone / meterId + password)
 router.post("/login", authController.loginUser)
 
-// Google login
-router.post("/google-login", authController.googleLogin)
-
 // Get phone for OTP (used in register & forgot password)
 router.post("/get-phone", authController.getPhoneForOtp)
 
@@ -20,4 +17,9 @@ router.post("/forgot-password", authController.forgotPassword)
 // Reset password (after OTP verification)
 router.post("/reset-password", authController.resetPassword)
 
-module.exports = router
+// Registration email verification (NO AUTH)
+router.post("/send-register-email-verification", authController.sendRegisterEmailVerification)
+router.get("/verify-register-email", authController.verifyRegisterEmailToken)
+router.get("/check-register-email", authController.checkRegisterEmail)
+
+module.exports = router 

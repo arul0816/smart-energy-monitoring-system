@@ -1,9 +1,10 @@
 import { Link, useNavigate } from "react-router-dom"
 import { useState } from "react"
 import { loginUser } from "../../services/api"
-import { Zap, Lock, User, AlertCircle, Eye, EyeOff } from "lucide-react"
+import { Zap, Lock, Mail, Phone, AlertCircle, Eye, EyeOff } from "lucide-react"
 
 export default function Login() {
+  const [inputType, setInputType] = useState("email") // "email" or "phone"
   const [identifier, setIdentifier] = useState("")
   const [password, setPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
@@ -16,6 +17,21 @@ export default function Login() {
     e.preventDefault()
     setLoading(true)
     setMessage("")
+
+    // Validate input based on type
+    if (inputType === "email") {
+      if (!identifier.includes("@")) {
+        setMessage("Please enter a valid email address")
+        setLoading(false)
+        return
+      }
+    } else if (inputType === "phone") {
+      if (!identifier.startsWith("+91") || identifier.length < 13) {
+        setMessage("Please enter a valid phone number (+91XXXXXXXXXX)")
+        setLoading(false)
+        return
+      }
+    }
 
     try {
       const res = await loginUser({ identifier, password })
@@ -31,6 +47,30 @@ export default function Login() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleInputChange = (e) => {
+    let value = e.target.value
+    
+    if (inputType === "phone") {
+      // Auto-format phone number
+      value = value.replace(/[^\d+]/g, "")
+      if (value && !value.startsWith("+91")) {
+        value = "+91" + value.replace(/\D/g, "")
+      }
+      // Limit to +91 + 10 digits
+      if (value.length > 13) {
+        value = value.slice(0, 13)
+      }
+    }
+    
+    setIdentifier(value)
+  }
+
+  const handleToggle = (type) => {
+    setInputType(type)
+    setIdentifier("")
+    setMessage("")
   }
 
   return (
@@ -57,21 +97,62 @@ export default function Login() {
 
           <form onSubmit={handleSubmit} autoComplete="on">
             <div className="space-y-5">
-              {/* Identifier Input */}
+              {/* Toggle Between Email and Phone */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-3">
+                  Login Method
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleToggle("email")}
+                    className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg font-medium transition-all ${
+                      inputType === "email"
+                        ? "bg-blue-500 text-white shadow-md"
+                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    }`}
+                  >
+                    <Mail className="w-5 h-5" />
+                    Email
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleToggle("phone")}
+                    className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg font-medium transition-all ${
+                      inputType === "phone"
+                        ? "bg-green-500 text-white shadow-md"
+                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    }`}
+                  >
+                    <Phone className="w-5 h-5" />
+                    Phone
+                  </button>
+                </div>
+              </div>
+
+              {/* Email/Phone Input */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Email / Phone / Meter ID
+                  {inputType === "email" ? "Email Address" : "Phone Number"}
                 </label>
                 <div className="relative">
-                  <User className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                  {inputType === "email" ? (
+                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                  ) : (
+                    <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                  )}
                   <input
                     type="text"
-                    name="username"
+                    name="identifier"
                     value={identifier}
-                    onChange={(e) => setIdentifier(e.target.value)}
-                    autoComplete="username"
+                    onChange={handleInputChange}
+                    autoComplete={inputType === "email" ? "email" : "tel"}
                     className="w-full pl-11 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
-                    placeholder="Enter your identifier"
+                    placeholder={
+                      inputType === "email"
+                        ? "Enter your email address"
+                        : "Enter your phone number (+91XXXXXXXXXX)"
+                    }
                     required
                   />
                 </div>

@@ -2,12 +2,13 @@ import { useState, useEffect } from "react"
 import { useNavigate, Link } from "react-router-dom"
 import { RecaptchaVerifier, signInWithPhoneNumber } from "firebase/auth"
 import { auth } from "../firebase"
-import { Zap, AlertCircle, CheckCircle } from "lucide-react"
+import { Zap, AlertCircle, CheckCircle, Mail, Phone } from "lucide-react"
 
 export default function ForgotPassword() {
   const navigate = useNavigate()
 
   const [step, setStep] = useState(1)
+  const [inputType, setInputType] = useState("email") // "email" or "phone"
   const [identifier, setIdentifier] = useState("")
   const [resolvedPhone, setResolvedPhone] = useState("")
   const [otp, setOtp] = useState("")
@@ -70,8 +71,21 @@ export default function ForgotPassword() {
   // SEND OTP
   const sendOtp = async () => {
     if (!identifier) {
-      showMessage("Enter Email / Phone / Meter ID", "error")
+      showMessage(`Enter your ${inputType}`, "error")
       return
+    }
+
+    // Validate input based on type
+    if (inputType === "email") {
+      if (!identifier.includes("@")) {
+        showMessage("Please enter a valid email address", "error")
+        return
+      }
+    } else if (inputType === "phone") {
+      if (!identifier.startsWith("+91") || identifier.length < 13) {
+        showMessage("Please enter a valid phone number (+91XXXXXXXXXX)", "error")
+        return
+      }
     }
 
     setLoading(true)
@@ -199,6 +213,30 @@ export default function ForgotPassword() {
     }
   }
 
+  const handleInputChange = (e) => {
+    let value = e.target.value
+    
+    if (inputType === "phone") {
+      // Auto-format phone number
+      value = value.replace(/[^\d+]/g, "")
+      if (value && !value.startsWith("+91")) {
+        value = "+91" + value.replace(/\D/g, "")
+      }
+      // Limit to +91 + 10 digits
+      if (value.length > 13) {
+        value = value.slice(0, 13)
+      }
+    }
+    
+    setIdentifier(value)
+  }
+
+  const handleToggle = (type) => {
+    setInputType(type)
+    setIdentifier("")
+    setMessage("")
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-green-50 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
@@ -223,16 +261,59 @@ export default function ForgotPassword() {
 
           {/* STEP 1 - IDENTIFIER */}
           {step === 1 && (
-            <div className="space-y-5">
+            <form onSubmit={(e) => { e.preventDefault(); sendOtp() }} className="space-y-5">
+              {/* Toggle Between Email and Phone */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-3">
+                  Recovery Method
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleToggle("email")}
+                    className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg font-medium transition-all ${
+                      inputType === "email"
+                        ? "bg-blue-500 text-white shadow-md"
+                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    }`}
+                  >
+                    <Mail className="w-5 h-5" />
+                    Email
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleToggle("phone")}
+                    className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg font-medium transition-all ${
+                      inputType === "phone"
+                        ? "bg-green-500 text-white shadow-md"
+                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    }`}
+                  >
+                    <Phone className="w-5 h-5" />
+                    Phone
+                  </button>
+                </div>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Email / Phone / Meter ID
+                  {inputType === "email" ? "Email Address" : "Phone Number"}
                 </label>
                 <input
                   type="text"
-                  placeholder="Enter your identifier"
+                  placeholder={
+                    inputType === "email"
+                      ? "Enter your email address"
+                      : "Enter your phone number (+91XXXXXXXXXX)"
+                  }
                   value={identifier}
-                  onChange={(e) => setIdentifier(e.target.value)}
+                  onChange={handleInputChange}
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      sendOtp()
+                    }
+                  }}
                   className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                 />
               </div>
@@ -261,8 +342,7 @@ export default function ForgotPassword() {
               )}
 
               <button
-                type="button"
-                onClick={sendOtp}
+                type="submit"
                 disabled={loading}
                 className="w-full bg-gradient-to-r from-blue-500 to-green-500 text-white py-3 rounded-lg font-semibold hover:from-blue-600 hover:to-green-600 transition-all disabled:opacity-50 shadow-md"
               >
@@ -284,7 +364,7 @@ export default function ForgotPassword() {
                   Back to Login
                 </Link>
               </div>
-            </div>
+            </form>
           )}
 
           {/* STEP 2 - OTP */}
@@ -303,6 +383,12 @@ export default function ForgotPassword() {
                   placeholder="6-digit OTP"
                   value={otp}
                   onChange={(e) => setOtp(e.target.value)}
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      verifyOtp()
+                    }
+                  }}
                   maxLength="6"
                   className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-center text-2xl tracking-widest"
                 />

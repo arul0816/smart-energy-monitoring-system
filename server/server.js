@@ -5,12 +5,11 @@ require("dotenv").config()
 const db = require("./config/db")
 const authRoutes = require("./routes/auth.routes")
 const userRoutes = require("./routes/user")
-
-// Import Energy Simulator
 const energySimulator = require("./services/energySimulator")
 
 const app = express()
 
+// CORS Configuration
 app.use(cors({
   origin: "http://localhost:5173",
   credentials: true,
@@ -18,34 +17,42 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"]
 }))
 
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "http://localhost:5173")
-  res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200)
-  }
-
-  next()
-})
-
+// Parse JSON
 app.use(express.json())
 
+// Health check route
 app.get("/", (req, res) => {
-  res.send("Backend is running")
+  res.json({ message: "Smart Energy System API is running" })
 })
 
+// API Routes
 app.use("/api/auth", authRoutes)
 app.use("/api/user", userRoutes)
 
+// 404 Handler
+app.use((req, res) => {
+  res.status(404).json({ message: "Route not found" })
+})
 
+// Error Handler
+app.use((err, req, res, next) => {
+  console.error("Server Error:", err)
+  res.status(500).json({ message: "Internal server error" })
+})
+
+// Start Server
 const PORT = process.env.PORT || 5000
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
   
-  // Start Energy Simulation (runs every 1 minute for demo)
-  // Change to 60 minutes for real deployment
-  energySimulator.startAutoSimulation(1) // 1 minute interval for testing
-  console.log("⚡ Energy simulation started")
+  // Test email configuration
+  const emailService = require("./utils/emailService")
+  if (emailService.testConfig) {
+    emailService.testConfig()
+  }
+  
+  // Start Energy Simulation (1 minute for testing, use 60 for production)
+  energySimulator.startAutoSimulation(1)
+  console.log("⚡ Energy simulation started (runs every 1 minute)")
 })

@@ -1,13 +1,15 @@
 const db = require("../config/db")
 const bcrypt = require("bcrypt")
 const jwt = require("jsonwebtoken")
-const { OAuth2Client } = require("google-auth-library")
+const crypto = require("crypto")
+const emailService = require("../utils/emailService")
 const normalizePhone = require("../utils/normalizePhone")
 
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID)
+// In-memory Set to store verified emails (reliable tracking)
+const verifiedEmails = new Set()
 
 /* ======================================================
-   REGISTER USER (AFTER EB CHECK + OTP)
+   REGISTER USER (AFTER EB CHECK + OTP + EMAIL VERIFICATION)
 ====================================================== */
 exports.registerUser = async (req, res) => {
   const { name, identifier, email, password } = req.body
@@ -84,6 +86,9 @@ exports.registerUser = async (req, res) => {
                 return res.status(500).json({ message: "Registration failed" })
               }
 
+              // Clear the verified email from memory after successful registration
+              verifiedEmails.delete(email.toLowerCase())
+
               const token = jwt.sign(
                 { id: result.insertId },
                 process.env.JWT_SECRET,
@@ -116,8 +121,6 @@ exports.loginUser = (req, res) => {
   const upperIdentifier = identifier.toUpperCase()
   const normalizedPhone = normalizePhone(identifier)
   const lowerEmail = identifier.toLowerCase()
-
-  // 🔥 For phone login, also try raw 10-digit format
   const rawPhone = identifier.replace(/\D/g, '').slice(-10)
 
   const sql = `
@@ -148,8 +151,8 @@ exports.loginUser = (req, res) => {
       const user = results[0]
 
       if (user.is_active !== 1) {
-        return res.status(403).json({ 
-          message: "Account not active. Please contact support." 
+        return res.status(403).json({
+          message: "Account not active. Please contact support."
         })
       }
 
@@ -170,55 +173,9 @@ exports.loginUser = (req, res) => {
 }
 
 /* ======================================================
-   GOOGLE LOGIN (ONLY IF USER ALREADY REGISTERED)
-====================================================== */
-exports.googleLogin = async (req, res) => {
-  try {
-    const { token } = req.body
-
-    const ticket = await googleClient.verifyIdToken({
-      idToken: token,
-      audience: process.env.GOOGLE_CLIENT_ID
-    })
-
-    const { email } = ticket.getPayload()
-
-    const sql = `
-      SELECT id FROM users
-      WHERE LOWER(email) = ? AND is_active = 1
-    `
-
-    db.query(sql, [email.toLowerCase()], (err, results) => {
-      if (err) {
-        console.error("Google Login DB Error:", err)
-        return res.status(500).json({ message: "Database error" })
-      }
-
-      if (results.length === 0) {
-        return res.status(403).json({ 
-          message: "Please register first with your EB consumer details" 
-        })
-      }
-
-      const jwtToken = jwt.sign(
-        { id: results[0].id },
-        process.env.JWT_SECRET,
-        { expiresIn: "1d" }
-      )
-
-      res.json({ message: "Google login successful", token: jwtToken })
-    })
-  } catch (err) {
-    console.error("Google Auth Error:", err)
-    res.status(401).json({ message: "Google authentication failed" })
-  }
-}
-
-/* ======================================================
    GET PHONE FOR OTP (Used in Register & Forgot Password)
 ====================================================== */
 exports.getPhoneForOtp = (req, res) => {
-  console.log("getPhoneForOtp request body:", req.body)
   const { identifier } = req.body
 
   if (!identifier) {
@@ -242,15 +199,13 @@ exports.getPhoneForOtp = (req, res) => {
   `
 
   db.query(
-    sql, 
-    [lowerEmail, normalizedPhone, rawPhone, upperIdentifier], 
+    sql,
+    [lowerEmail, normalizedPhone, rawPhone, upperIdentifier],
     (err, rows) => {
       if (err) {
         console.error("Get Phone Error:", err)
         return res.status(500).json({ message: "Database error" })
       }
-
-      console.log("getPhoneForOtp rows:", rows)
 
       if (rows.length === 0) {
         return res.status(404).json({
@@ -264,7 +219,6 @@ exports.getPhoneForOtp = (req, res) => {
         })
       }
 
-      // 🔥 NORMALIZE PHONE BEFORE SENDING TO FRONTEND
       const phoneFromDB = rows[0].phone
       const formattedPhone = normalizePhone(phoneFromDB)
 
@@ -283,7 +237,6 @@ exports.getPhoneForOtp = (req, res) => {
    FORGOT PASSWORD - SEND OTP
 ====================================================== */
 exports.forgotPassword = (req, res) => {
-  console.log("forgotPassword request body:", req.body)
   const { identifier } = req.body
 
   if (!identifier) {
@@ -315,8 +268,6 @@ exports.forgotPassword = (req, res) => {
         return res.status(500).json({ message: "Database error" })
       }
 
-      console.log("forgotPassword results:", results)
-
       if (results.length === 0) {
         return res.status(404).json({ message: "User not found" })
       }
@@ -327,7 +278,6 @@ exports.forgotPassword = (req, res) => {
         return res.status(500).json({ message: "Phone number not found" })
       }
 
-      // 🔥 NORMALIZE PHONE BEFORE SENDING TO FRONTEND
       const formattedPhone = normalizePhone(phone)
 
       if (!formattedPhone) {
@@ -336,10 +286,9 @@ exports.forgotPassword = (req, res) => {
         })
       }
 
-      // Return phone for Firebase OTP
-      res.json({ 
+      res.json({
         message: "User found",
-        phone: formattedPhone 
+        phone: formattedPhone
       })
     }
   )
@@ -401,4 +350,195 @@ exports.resetPassword = async (req, res) => {
       )
     }
   )
+}
+
+/* ======================================================
+   SEND EMAIL VERIFICATION FOR REGISTRATION (No Auth)
+====================================================== */
+exports.sendRegisterEmailVerification = async (req, res) => {
+  const { email } = req.body
+
+  if (!email || !email.includes('@')) {
+    return res.status(400).json({ message: "Invalid email address" })
+  }
+
+  // Check if email already exists in users table
+  const checkSql = `SELECT id FROM users WHERE LOWER(email) = ?`
+
+  db.query(checkSql, [email.toLowerCase()], async (err, results) => {
+    if (err) {
+      console.error("Email check error:", err)
+      return res.status(500).json({ message: "Database error" })
+    }
+
+    if (results.length > 0) {
+      return res.status(409).json({
+        message: "This email is already registered"
+      })
+    }
+
+    // Generate verification token
+    const token = crypto.randomBytes(32).toString('hex')
+    const expiry = new Date(Date.now() + 15 * 60 * 1000) // 15 minutes
+
+    // Store token in temp table
+    const storeSql = `
+      INSERT INTO temp_email_verification 
+      (email, token, expires_at)
+      VALUES (?, ?, ?)
+      ON DUPLICATE KEY UPDATE 
+        token = ?,
+        expires_at = ?
+    `
+
+    db.query(
+      storeSql,
+      [email.toLowerCase(), token, expiry, token, expiry],
+      async (err) => {
+        if (err) {
+          console.error("Token storage error:", err)
+          return res.status(500).json({ message: "Failed to generate verification link" })
+        }
+
+        // Send verification email
+        const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-register-email?token=${token}`
+
+        const emailHtml = `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+              .header { background: linear-gradient(135deg, #3B82F6 0%, #10B981 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+              .content { background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; }
+              .button { display: inline-block; background: #3B82F6; color: white; padding: 15px 40px; text-decoration: none; border-radius: 8px; font-weight: bold; margin: 20px 0; }
+              .footer { text-align: center; margin-top: 30px; color: #6B7280; font-size: 14px; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1>⚡ Smart Energy System</h1>
+              </div>
+              <div class="content">
+                <h2>Verify Your Email Address</h2>
+                <p>Welcome! You're almost ready to start using Smart Energy System.</p>
+                <p>Please click the button below to verify your email address:</p>
+                <center>
+                  <a href="${verificationUrl}" class="button">Verify Email</a>
+                </center>
+                <p><strong>This link will expire in 15 minutes.</strong></p>
+                <p>If you didn't create an account, please ignore this email.</p>
+                <div class="footer">
+                  <p>© 2025 Smart Energy System. All rights reserved.</p>
+                </div>
+              </div>
+            </div>
+          </body>
+          </html>
+        `
+
+        try {
+          await emailService.sendEmail(
+            email, 
+            'Verify Your Email - Smart Energy System Registration', 
+            emailHtml
+          )
+
+          console.log("✅ Verification email sent to:", email)
+
+          res.json({
+            message: "Verification email sent successfully. Please check your inbox.",
+            email: email
+          })
+        } catch (emailErr) {
+          console.error("❌ Email send error:", emailErr)
+          return res.status(500).json({
+            message: "Failed to send verification email. Please try again."
+          })
+        }
+      }
+    )
+  })
+}
+
+/* ======================================================
+   VERIFY REGISTRATION EMAIL TOKEN
+====================================================== */
+exports.verifyRegisterEmailToken = (req, res) => {
+  const { token } = req.query
+
+  console.log("🔐 Registration email verification attempt")
+
+  if (!token) {
+    return res.status(400).json({ message: "Verification token is required" })
+  }
+
+  // Find token in temp table
+  const findSql = `
+    SELECT email, expires_at 
+    FROM temp_email_verification
+    WHERE token = ?
+  `
+
+  db.query(findSql, [token], (err, results) => {
+    if (err) {
+      console.error("Token lookup error:", err)
+      return res.status(500).json({ message: "Database error" })
+    }
+
+    if (results.length === 0) {
+      console.log("❌ Token not found")
+      return res.status(404).json({
+        message: "Invalid or expired verification link"
+      })
+    }
+
+    const { email, expires_at } = results[0]
+
+    // Check if token expired
+    if (new Date() > new Date(expires_at)) {
+      console.log("❌ Token expired")
+      db.query('DELETE FROM temp_email_verification WHERE token = ?', [token])
+      return res.status(410).json({
+        message: "Verification link has expired. Please request a new one."
+      })
+    }
+
+    // Add email to verified set (this is what the polling checks)
+    verifiedEmails.add(email.toLowerCase())
+    console.log("✅ Email added to verified set:", email)
+    console.log("📧 Current verified emails:", Array.from(verifiedEmails))
+
+    // Delete the token from database
+    db.query('DELETE FROM temp_email_verification WHERE token = ?', [token])
+
+    console.log("✅ Registration email verified successfully:", email)
+    
+    res.json({
+      message: "Email verified successfully!",
+      email: email,
+      success: true
+    })
+  })
+}
+
+/* ======================================================
+   CHECK REGISTRATION EMAIL VERIFICATION STATUS
+====================================================== */
+exports.checkRegisterEmail = (req, res) => {
+  const { email } = req.query
+
+  if (!email) {
+    return res.json({ verified: false })
+  }
+
+  const lowerEmail = email.toLowerCase()
+  const isVerified = verifiedEmails.has(lowerEmail)
+
+  console.log("🔍 Checking email:", lowerEmail, "| Verified:", isVerified)
+  console.log("📧 All verified emails:", Array.from(verifiedEmails))
+
+  res.json({ verified: isVerified })
 }
